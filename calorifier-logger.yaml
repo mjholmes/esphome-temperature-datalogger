@@ -1,0 +1,163 @@
+# Calorifier temperature logger
+# M5Stack AtomS3 Lite (ESP32-S3FN8) + DS2484 I2C->1-Wire bridge on the Grove port
+# 5x DS18B20 -> flespi MQTT broker, plus local web UI.
+
+substitutions:
+  name: calorifier-logger
+  friendly_name: Calorifier Logger
+  poll_interval: 5min
+  led_brightness: "0.1" # 0.0-1.0; status LED is very bright at full power
+
+  # 1-Wire ROM addresses of each DS18B20 (from the boot log "Found devices" list).
+  # Matched to positions using the serial digits on each probe's label.
+  addr_dhw_flow: "0x583ce1e381199828"
+  addr_dhw_return: "0x023ce1e381f2df28"
+  addr_boiler_flow: "0x383ce1e381702f28"
+  addr_boiler_return: "0xbc3ce1e381655928"
+  addr_mcw_in: "0x563ce1e3812f3528"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG # CONFIG or lower is needed to see the 1-Wire address dump at boot
+  hardware_uart: USB_SERIAL_JTAG # AtomS3 uses the S3's native USB
+
+wifi:
+  # Joins whichever of these is in range (strongest signal if both are)
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi2_ssid
+      password: !secret wifi2_password
+  ap: # fallback hotspot if the configured network is unreachable
+    ssid: ${name}
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+web_server:
+  port: 80
+  version: 3
+  local: true # bundle the UI assets so it works with no internet access
+  auth:
+    username: admin
+    password: !secret web_password
+
+mqtt:
+  broker: mqtt.flespi.io
+  port: 1883
+  username: !secret flespi_token # flespi: token as username, password empty
+  password: ""
+  client_id: ${name}
+  discovery: false # Home Assistant discovery not needed
+  log_topic: null # don't ship debug logs to flespi
+  # topic_prefix defaults to ${name}; sensors publish to
+  #   ${name}/sensor/<sensor_name>/state  and availability to ${name}/status
+
+# Grove port: G2 = SDA, G1 = SCL
+i2c:
+  sda: GPIO2
+  scl: GPIO1
+  frequency: 100kHz
+  scan: true
+
+one_wire:
+  - platform: ds2484
+    id: ow_bus
+    active_pullup: true # helps with 5 sensors / longer cable runs
+
+sensor:
+  - platform: dallas_temp
+    one_wire_id: ow_bus
+    address: ${addr_dhw_flow}
+    name: DHW Flow
+    update_interval: ${poll_interval}
+  - platform: dallas_temp
+    one_wire_id: ow_bus
+    address: ${addr_dhw_return}
+    name: DHW Return
+    update_interval: ${poll_interval}
+  - platform: dallas_temp
+    one_wire_id: ow_bus
+    address: ${addr_boiler_flow}
+    name: Boiler Flow
+    update_interval: ${poll_interval}
+  - platform: dallas_temp
+    one_wire_id: ow_bus
+    address: ${addr_boiler_return}
+    name: Boiler Return
+    update_interval: ${poll_interval}
+  - platform: dallas_temp
+    one_wire_id: ow_bus
+    address: ${addr_mcw_in}
+    name: MCW In
+    update_interval: ${poll_interval}
+
+  # Diagnostics
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: ${poll_interval}
+    entity_category: diagnostic
+  - platform: uptime
+    name: Uptime
+    update_interval: ${poll_interval}
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
+
+button:
+  - platform: restart
+    name: Restart
+
+# Built-in WS2812 RGB LED on GPIO35, used as a status indicator:
+#   green = WiFi + MQTT OK, magenta = WiFi OK but no MQTT, blue = no WiFi
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    internal: true # not exposed on the web UI / MQTT
+    pin: GPIO35
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: GRB
+    gamma_correct: 1.0 # linear, so low brightness stays visible
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
+
+globals:
+  - id: led_state
+    type: int
+    initial_value: "-1"
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          int state = !wifi::global_wifi_component->is_connected() ? 0
+                    : !mqtt::global_mqtt_client->is_connected()     ? 1
+                    : 2;
+          if (state == id(led_state)) return;
+          id(led_state) = state;
+          static const float colours[3][3] = {
+            {0.0, 0.0, 1.0},  // blue: no WiFi
+            {1.0, 0.0, 1.0},  // magenta: WiFi, no MQTT
+            {0.0, 1.0, 0.0},  // green: all OK
+          };
+          auto call = id(status_led).turn_on();
+          call.set_rgb(colours[state][0], colours[state][1], colours[state][2]);
+          call.set_brightness(${led_brightness});
+          call.perform();

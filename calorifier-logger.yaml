@@ -82,28 +82,33 @@ sensor:
   - platform: dallas_temp
     one_wire_id: ow_bus
     address: ${addr_dhw_flow}
+    id: t_dhw_flow
     name: DHW Flow
-    update_interval: ${poll_interval}
+    update_interval: never # polled together by the interval below
   - platform: dallas_temp
     one_wire_id: ow_bus
     address: ${addr_dhw_return}
+    id: t_dhw_return
     name: DHW Return
-    update_interval: ${poll_interval}
+    update_interval: never # polled together by the interval below
   - platform: dallas_temp
     one_wire_id: ow_bus
     address: ${addr_boiler_flow}
+    id: t_boiler_flow
     name: Boiler Flow
-    update_interval: ${poll_interval}
+    update_interval: never # polled together by the interval below
   - platform: dallas_temp
     one_wire_id: ow_bus
     address: ${addr_boiler_return}
+    id: t_boiler_return
     name: Boiler Return
-    update_interval: ${poll_interval}
+    update_interval: never # polled together by the interval below
   - platform: dallas_temp
     one_wire_id: ow_bus
     address: ${addr_mcw_in}
+    id: t_mcw_in
     name: MCW In
-    update_interval: ${poll_interval}
+    update_interval: never # polled together by the interval below
 
   # Diagnostics
   - platform: wifi_signal
@@ -144,6 +149,15 @@ globals:
     initial_value: "-1"
 
 interval:
+  # Poll all probes from one timer so they convert and report together.
+  # (Separate update_intervals each get a random start offset of up to a few s.)
+  - interval: ${poll_interval}
+    then:
+      - component.update: t_dhw_flow
+      - component.update: t_dhw_return
+      - component.update: t_boiler_flow
+      - component.update: t_boiler_return
+      - component.update: t_mcw_in
   - interval: 1s
     then:
       - lambda: |-
